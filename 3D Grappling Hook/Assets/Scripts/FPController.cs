@@ -16,7 +16,12 @@ public class FPController : MonoBehaviour
     float pitch;
 
     // Movement related variables
-    float moveSpeed = 5f;
+    float walkSpeed = 3f;
+    float runSpeed  = 5f;
+    float speedSmoothTime = 0.1f; // How long it takes to stop moving
+    float speedSmoothVelocity;
+    float currentSpeed;
+    bool walking = false;
 
     // Jump/Gravity related variables
     float minJumpHeight = .25f; // Lowest we may jump
@@ -27,10 +32,16 @@ public class FPController : MonoBehaviour
     float velY;                 // Stores our velocity in the y direction
     float gravity;
 
+    /// <summary>
+    /// Control how much the player can control their movement in the air.
+    /// </summary>
+    [Tooltip("How much the player can control their movement in the air.")]
+    [Range(0f, 1f)]public float airControlPercent;
+
     // Grappling hook related
-    private Vector3 newGrappleHookPos;
-    float maxHookDist = 50f;
-    private float grappleMoveSpeed = 3f;
+    public Vector3 newGrappleHookPos;
+    float maxHookDst = 50f;
+    private float grappleMoveSpeed = 10f;
     bool hookAttached = false;
     bool isBeingMovedByHookShot = false;
 
@@ -56,6 +67,12 @@ public class FPController : MonoBehaviour
         {
             cameraT = GetComponentInChildren<Camera>().transform;
         }
+
+        if (lockCursor)
+        {
+            Cursor.lockState = CursorLockMode.Locked;
+            Cursor.visible = false;
+        }
     }
 	
 	// Update is called once per frame
@@ -75,17 +92,27 @@ public class FPController : MonoBehaviour
         // Take input and normalize it
         Vector3 moveDir = new Vector3(Input.GetAxisRaw("Horizontal"), 0, Input.GetAxisRaw("Vertical")).normalized;
 
-        // Get "gravity"
-        velY += gravity * Time.deltaTime;
+        walking = Input.GetKey(KeyCode.R); // TODO: Make walk input
 
-        // Store all our movement
-        velocity = transform.TransformDirection(moveDir) * moveSpeed + Vector3.up * velY;
+        // Get our wanted speed and then smooth it
+        float targetSpeed = ((walking) ? walkSpeed : runSpeed) * moveDir.magnitude;
+        currentSpeed =
+            Mathf.SmoothDamp(currentSpeed, targetSpeed, ref speedSmoothVelocity, GetModifiedSmoothTime(speedSmoothTime));
 
-        // Apply movement
         if(isBeingMovedByHookShot == false)
         {
+            // Get "gravity"
+            velY += gravity * Time.deltaTime;
+
+            // Store all our movement
+            velocity = transform.TransformDirection(moveDir) * currentSpeed + Vector3.up * velY;
+
+            // Apply movement
             cc.Move(velocity * Time.deltaTime);
         }
+
+        // Helps prevent animation when moving into walls
+        currentSpeed = new Vector2(cc.velocity.x, cc.velocity.z).magnitude;
 
         oldDir = moveDir;
 
@@ -104,13 +131,22 @@ public class FPController : MonoBehaviour
     /// </summary>
     void HandleHookShot()
     {
-        Debug.DrawLine(cameraT.position, cameraT.forward * maxHookDist);
+        Debug.DrawLine(cameraT.position, cameraT.forward * maxHookDst, Color.red);
 
+        // TODO: Convert this to a hook object?
         // If the player presses the left mouse button or other set button
         if(Input.GetButtonDown("Fire1"))
         {
+            // Reset hookshoot if we're already being moved
+            if(isBeingMovedByHookShot == true)
+            {
+                ReturnHook();
+            }
+
             RaycastHit hit;
-            if(Physics.Raycast(cameraT.position, cameraT.forward, out hit, maxHookDist))
+
+            // TODO: Hand/fire position?
+            if(Physics.Raycast(transform.position, cameraT.forward, out hit, maxHookDst))
             {
                 // If our ray hit something, our hook has attached to something
                 hookAttached = true;
@@ -122,11 +158,34 @@ public class FPController : MonoBehaviour
             }
         }
 
+        // TODO: Allow swinging?
         if(hookAttached)
         {
             isBeingMovedByHookShot = true;
-            velocity = Vector3.MoveTowards(transform.position, newGrappleHookPos, grappleMoveSpeed * Time.deltaTime);
-            cc.Move(-velocity * Time.deltaTime);
+
+            float dstToHookPoint = Vector3.Distance(transform.position, newGrappleHookPos);
+            Vector3 moveTowardsVector = 
+                Vector3.MoveTowards(
+                    transform.position, 
+                    newGrappleHookPos, 
+                    grappleMoveSpeed // Make speed consistent
+                );
+
+            // Transform the point we hit to world space
+            moveTowardsVector = transform.InverseTransformPoint(moveTowardsVector);
+
+            // Then correct the direction
+            moveTowardsVector = transform.TransformDirection(moveTowardsVector);
+
+            // Return the hook if it's too close
+            if (dstToHookPoint < 1f)
+            {
+                ReturnHook();
+            }
+
+            cc.Move(moveTowardsVector * Time.deltaTime);
+
+            Debug.DrawLine(transform.position, newGrappleHookPos, Color.green); // Draw a line to where we hit
         }
     }
 
@@ -164,6 +223,21 @@ public class FPController : MonoBehaviour
         {
             velY = minJumpVel;
         }
+
+        // If our hook is attached and we press jump, return hook
+        else if(Input.GetButtonUp("Jump") && hookAttached == true)
+        {
+            ReturnHook();
+        }
+    }
+
+    /// <summary>
+    /// Resets hook variables.
+    /// </summary>
+    void ReturnHook()
+    {
+        hookAttached = false;
+        isBeingMovedByHookShot = false;
     }
 
     /// <summary>
@@ -176,5 +250,20 @@ public class FPController : MonoBehaviour
         if (angle > 360f)
             angle -= 360f;
         return Mathf.Clamp(angle, min, max);
+    }
+
+    float GetModifiedSmoothTime(float smoothTime)
+    {
+        if (cc.isGrounded)
+        {
+            return smoothTime;
+        }
+
+        if (airControlPercent == 0)
+        {
+            return float.MaxValue;
+        }
+
+        return smoothTime / airControlPercent;
     }
 }
